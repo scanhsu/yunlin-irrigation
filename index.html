@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>雲林農田水利圖資 v0.2</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<style>
+  :root { --bg:#fff; --fg:#1f2937; --muted:#6b7280; --ok:#15803d; --bad:#b91c1c; --warn:#b45309; --card:#f3f4f6; }
+  html, body { margin:0; height:100%; font-family:system-ui,"Noto Sans TC","Microsoft JhengHei",sans-serif; color:var(--fg); background:#e5e7eb; }
+  #map { position:absolute; inset:0; }
+  #panel { position:absolute; z-index:1000; left:10px; bottom:10px; width:min(420px, calc(100% - 20px));
+           max-height:55vh; overflow:auto; background:var(--bg); border-radius:10px; padding:10px 14px;
+           box-shadow:0 2px 12px rgba(0,0,0,.3); font-size:14px; line-height:1.5; }
+  #panel h1 { margin:0 0 2px; font-size:15px; }
+  .muted { color:var(--muted); font-size:12px; }
+  .row { display:flex; justify-content:space-between; gap:8px; font-size:13px; }
+  .ok { color:var(--ok); font-weight:600; } .bad { color:var(--bad); font-weight:600; } .wait { color:var(--warn); }
+  details { margin-top:6px; } summary { cursor:pointer; font-weight:600; }
+  pre { white-space:pre-wrap; word-break:break-all; max-height:140px; overflow:auto; background:var(--card); padding:6px; border-radius:6px; font-size:12px; margin:4px 0; }
+  button { margin-top:6px; padding:5px 10px; font-size:13px; }
+  #envWarn { display:none; background:#fef3c7; border:1px solid #f59e0b; border-radius:6px; padding:6px 8px; margin:6px 0; font-size:13px; }
+  .pin { width:16px; height:16px; border-radius:50%; background:#2563eb; border:3px solid #fff; box-shadow:0 0 0 2px #2563eb; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <h1>雲林農田水利圖資(崙背・褒忠・麥寮) v0.2</h1>
+  <div class="muted">點地圖任一位置查看座標與圳路資訊;右上角切換圖層。</div>
+  <div id="envWarn"></div>
+
+  <details open id="diagBox">
+    <summary>連線診斷</summary>
+    <div id="diag"></div>
+    <button id="copyDiag">複製診斷結果</button>
+  </details>
+
+  <details open>
+    <summary>點選資訊</summary>
+    <div id="info">尚未點選位置</div>
+  </details>
+  <button id="goTest">回到測試點(大有村)</button>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script>
+// ===== 基本設定 =====
+var TEST_POINT = [23.7482, 120.3046];   // 大有村測試點(Plus Code P8X3+7VJ)
+var CANAL_URL  = "https://www.iacloud.ia.gov.tw/servergate/sgsgate.ashx/WMS/canal_public";
+var NLSC_WMS   = "https://wms.nlsc.gov.tw/wms";
+var NLSC_WMTS  = "https://wmts.nlsc.gov.tw/wmts/{layer}/default/GoogleMapsCompatible/{z}/{y}/{x}";
+
+var map = L.map("map").setView(TEST_POINT, 15);
+
+// ===== 底圖(WMTS 圖磚,比 WMS 快)=====
+var emap  = L.tileLayer(NLSC_WMTS, { layer:"EMAP",  maxZoom:20, maxNativeZoom:19, attribution:"© 內政部國土測繪中心" }).addTo(map);
+var photo = L.tileLayer(NLSC_WMTS, { layer:"PHOTO2", maxZoom:20, maxNativeZoom:19, attribution:"© 內政部國土測繪中心" });
+var osm   = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom:19, attribution:"© OpenStreetMap 貢獻者(僅供測試)" });
+
+// ===== 疊加圖層(WMS)=====
+var canal = L.tileLayer.wms(CANAL_URL, {
+  layers:"canal_public", styles:"default", format:"image/png", transparent:true,
+  version:"1.3.0", opacity:0.95, attribution:"灌排渠道 © 農田水利署(2017-05-01)"
+}).addTo(map);
+function nlsc(name, op) {
+  return L.tileLayer.wms(NLSC_WMS, { layers:name, format:"image/png", transparent:true, version:"1.1.1", opacity:op });
+}
+var agri = nlsc("LUIMAP01", 0.5), water = nlsc("LUIMAP04", 0.5), village = nlsc("Village", 0.9).addTo(map);
+
+L.control.layers(
+  { "通用電子地圖":emap, "正射影像":photo, "OSM(測試)":osm },
+  { "灌排渠道(農田水利署)":canal, "農業用地(國土利用)":agri, "水利用地(國土利用)":water, "村里界":village },
+  { collapsed: window.innerWidth < 600 }
+).addTo(map);
+L.control.scale({ imperial:false }).addTo(map);
+
+// 測試點:用 CSS 畫的圓點,不依賴外部圖片
+var pinIcon = L.divIcon({ className:"", html:'<div class="pin"></div>', iconSize:[22,22], iconAnchor:[11,11] });
+var testMarker = L.marker(TEST_POINT, { icon:pinIcon }).addTo(map).bindPopup("測試點:大有村");
+
+// ===== 開啟環境檢查 =====
+var envWarn = document.getElementById("envWarn");
+var inFrame = (function(){ try { return window.self !== window.top; } catch(e) { return true; } })();
+var env = "開啟方式:" + location.protocol.replace(":","") + (inFrame ? "(內嵌視窗)" : "(獨立頁面)");
+if (inFrame) {
+  envWarn.style.display = "block";
+  envWarn.textContent = "你可能是在預覽視窗中開啟,外部地圖圖片會被擋。請下載檔案後,用 Chrome 或 Edge 直接開啟。";
+}
+
+// ===== 連線診斷:對每個服務各抓一張測試圖 =====
+var diagEl = document.getElementById("diag");
+var results = {};
+function bboxAround(latlng, halfMeters) {
+  var p = L.CRS.EPSG3857.project(L.latLng(latlng));
+  return [p.x-halfMeters, p.y-halfMeters, p.x+halfMeters, p.y+halfMeters].join(",");
+}
+function wmsTestUrl(base, layer, ver) {
+  var crsKey = ver === "1.3.0" ? "CRS" : "SRS";
+  var q = { SERVICE:"WMS", VERSION:ver, REQUEST:"GetMap", LAYERS:layer, STYLES: base===CANAL_URL ? "default" : "",
+            FORMAT:"image/png", TRANSPARENT:"true", WIDTH:256, HEIGHT:256, BBOX:bboxAround(TEST_POINT, 1500) };
+  q[crsKey] = "EPSG:3857";
+  return base + "?" + new URLSearchParams(q).toString();
+}
+function tileXY(z) {
+  var n = Math.pow(2, z), lat = TEST_POINT[0]*Math.PI/180;
+  return { x: Math.floor((TEST_POINT[1]+180)/360*n),
+           y: Math.floor((1 - Math.log(Math.tan(lat)+1/Math.cos(lat))/Math.PI)/2*n), z:z };
+}
+var t = tileXY(15);
+var tests = [
+  ["cdnjs 圖片(標記圖示)", "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png"],
+  ["國土測繪 WMTS 底圖",   "https://wmts.nlsc.gov.tw/wmts/EMAP/default/GoogleMapsCompatible/"+t.z+"/"+t.y+"/"+t.x],
+  ["國土測繪 WMS 村里界",  wmsTestUrl(NLSC_WMS, "Village", "1.1.1")],
+  ["水利署 灌排渠道 WMS",  wmsTestUrl(CANAL_URL, "canal_public", "1.3.0")],
+  ["OSM 圖磚",            "https://tile.openstreetmap.org/"+t.z+"/"+t.x+"/"+t.y+".png"]
+];
+function render() {
+  diagEl.innerHTML = '<div class="muted">' + env + '</div>' + tests.map(function(tc){
+    var r = results[tc[0]];
+    var cls = !r ? "wait" : (r.ok ? "ok" : "bad");
+    var txt = !r ? "測試中…" : (r.ok ? "正常 (" + r.ms + " ms)" : "失敗");
+    return '<div class="row"><span>'+tc[0]+'</span><span class="'+cls+'">'+txt+'</span></div>';
+  }).join("");
+}
+render();
+tests.forEach(function(tc){
+  var img = new Image(), t0 = performance.now(), done = false;
+  var timer = setTimeout(function(){ if(!done){ done=true; results[tc[0]]={ok:false}; render(); } }, 15000);
+  img.onload  = function(){ if(done) return; done=true; clearTimeout(timer); results[tc[0]]={ok:true, ms:Math.round(performance.now()-t0)}; render(); };
+  img.onerror = function(){ if(done) return; done=true; clearTimeout(timer); results[tc[0]]={ok:false}; render(); };
+  img.src = tc[1];
+});
+document.getElementById("copyDiag").onclick = function(){
+  var lines = [env].concat(tests.map(function(tc){ var r=results[tc[0]]; return tc[0]+":"+(!r?"測試中":(r.ok?"正常":"失敗")); }));
+  var text = lines.join("\n");
+  (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).then(
+    function(){ alertBox("已複製,貼到對話給 Claude"); },
+    function(){ alertBox(text); });
+};
+function alertBox(msg){ document.getElementById("info").innerHTML = "<pre></pre>"; document.querySelector("#info pre").textContent = msg; }
+
+// ===== 點選查詢(GetFeatureInfo)=====
+var infoEl = document.getElementById("info"), clickMarker = null;
+function featureInfoUrl(latlng, fmt) {
+  var b = map.getBounds(), crs = map.options.crs;
+  var nw = crs.project(b.getNorthWest()), se = crs.project(b.getSouthEast());
+  var size = map.getSize(), pt = map.latLngToContainerPoint(latlng);
+  return CANAL_URL + "?" + new URLSearchParams({
+    SERVICE:"WMS", VERSION:"1.3.0", REQUEST:"GetFeatureInfo",
+    LAYERS:"canal_public", QUERY_LAYERS:"canal_public", STYLES:"default", CRS:"EPSG:3857",
+    BBOX:[nw.x, se.y, se.x, nw.y].join(","), WIDTH:size.x, HEIGHT:size.y,
+    I:Math.round(pt.x), J:Math.round(pt.y), INFO_FORMAT:fmt, FEATURE_COUNT:5
+  }).toString();
+}
+map.on("click", function(e){
+  var lat = e.latlng.lat.toFixed(5), lng = e.latlng.lng.toFixed(5);
+  if (clickMarker) map.removeLayer(clickMarker);
+  clickMarker = L.circleMarker(e.latlng, { radius:7, color:"#c2410c" }).addTo(map);
+  var url = featureInfoUrl(e.latlng, "text/xml");
+  infoEl.innerHTML = "座標:" + lat + ", " + lng + "<br>圳路查詢中…";
+  fetch(url).then(function(r){ return r.text(); }).then(function(txt){
+    infoEl.innerHTML = "座標:" + lat + ", " + lng + "<br>圳路查詢結果(點越靠近圳路越可能有資料):<pre></pre>";
+    infoEl.querySelector("pre").textContent = txt.length > 2000 ? txt.slice(0,2000)+"…" : txt;
+  }).catch(function(){
+    infoEl.innerHTML = "座標:" + lat + ", " + lng +
+      '<br><a href="'+url+'" target="_blank" rel="noopener">在新分頁查看圳路資訊</a>' +
+      '<div class="muted">瀏覽器不允許直接讀取,點連結另開即可。</div>';
+  });
+});
+// 讓測試點顯示在面板上方,不被遮住
+function showTest(){ map.setView(TEST_POINT, 15, { animate:false }); map.panBy([0, Math.round(map.getSize().y * 0.2)], { animate:false }); }
+showTest();
+document.getElementById("goTest").onclick = function(){ showTest(); testMarker.openPopup(); };
+</script>
+</body>
+</html>
